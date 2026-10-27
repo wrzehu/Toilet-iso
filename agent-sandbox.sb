@@ -2,187 +2,49 @@
 
 ;; ==============================================================================
 ;; Profil Sandboxa macOS (Seatbelt) dla Antigravity CLI / Asystenta AI
-;; Ogranicza uprawnienia procesu wyłącznie do katalogu bieżącego projektu.
-;; Wersja 3 — ujednolicony profil na podstawie Android + iOS.
+;; Wersja 4 — podejście "allow-default + deny sensitive" dla macOS 26+ (Tahoe).
+;;
+;; Na macOS 26 Tahoe podejście "deny default" wymaga specjalnych entitlementów
+;; procesu nadrzędnego, których Terminal/VSCode nie posiada — powoduje SIGABRT.
+;; Rozwiązanie: domyślnie zezwól na wszystko, jawnie zablokuj wrażliwe obszary.
+;; Sandboxing skupia się na ochronie danych użytkownika przed AI.
 ;; ==============================================================================
 
-;; Domyślna reguła: blokuj wszystko, co nie zostało explicite dozwolone poniżej (Deny by default)
-(deny default)
+;; Domyślnie zezwól na wszystko (wymagane przez macOS 26+ bez entitlementów)
+(allow default)
 
 ;; Parametry przekazywane z bashowego skryptu start.sh (przez -D PROJECT_DIR=... -D USER_HOME=...)
 (define project-dir (param "PROJECT_DIR"))
 (define user-home   (param "USER_HOME"))
 
-;; Pomocnicze funkcje dla ścieżek w katalogu domowym użytkownika
-(define (home-subpath path)
-    (subpath (string-append user-home path)))
+;; ==============================================================================
+;; BLOKADY — wrażliwe dane i katalogi użytkownika
+;; ==============================================================================
 
-(define (home-literal path)
-    (literal (string-append user-home path)))
-
-;; ------------------------------------------------------------------------------
-;; 1. Podstawowe uprawnienia procesów i jądra
-;; ------------------------------------------------------------------------------
-(allow process-exec)
-(allow process-fork)
-(allow process-info*)
-(allow sysctl-read)
-
-;; Sygnały — wymagane, by CLI mogło przekazywać SIGINT/SIGTERM do podprocesów
-;; (np. przerwanie długiego git clone lub npm install przez Ctrl+C)
-(allow signal)
-
-;; Odczyt metadanych systemu plików (stat/lstat) — wymagany przez getcwd()
-;; i wiele narzędzi sprawdzających istnienie ścieżek nadrzędnych.
-;; WAŻNE: file-read-metadata NIE daje dostępu do zawartości plików.
-(allow file-read-metadata)
-
-;; ------------------------------------------------------------------------------
-;; 2. Komunikacja IPC
-;; Ograniczona do usług niezbędnych dla: dyld, libSystem, TLS/SSL, DNS, sieci.
-;; ------------------------------------------------------------------------------
-(allow ipc-posix*)
-(allow user-preference-read)
-
-(allow mach-lookup
-    ;; Logowanie systemowe
-    (global-name "com.apple.system.logger")
-    (global-name "com.apple.system.notification_center")
-    ;; Rozpoznawanie użytkowników i grup
-    (global-name "com.apple.system.opendirectoryd.libinfo")
-    (global-name "com.apple.system.opendirectoryd.membership")
-    (global-name "com.apple.bsd.dirhelper")
-    ;; DNS
-    (global-name "com.apple.dnssd.service")
-    (global-name "com.apple.mDNSResponder")
-    (global-name "com.apple.SystemConfiguration.DNSConfiguration")
-    ;; TLS / weryfikacja certyfikatów HTTPS — bez tego połączenia do Gemini API nie działają
-    (global-name "com.apple.trustd")
-    (global-name "com.apple.trustd.agent")
-    (global-name "com.apple.SecurityServer")
-    ;; Warstwa sieciowa
-    (global-name "com.apple.networkd")
-    (global-name "com.apple.SystemConfiguration.configd")
-    ;; CoreServices — wymagane przez Cocoa/Foundation używane przez Node.js
-    (global-name "com.apple.CoreServices.coreservicesd")
-    (global-name "com.apple.coreservices.launchservicesd")
-    (global-name "com.apple.lsd.mapdb"))
-
-;; ------------------------------------------------------------------------------
-;; 3. Obsługa terminala i deskryptorów wejścia/wyjścia
-;; ------------------------------------------------------------------------------
-(allow pseudo-terminal)
-
-(allow file-ioctl
-    (literal "/dev/tty")
-    (literal "/dev/ptmx")
-    (subpath "/dev/ttys")
-    (subpath "/dev"))
-
-(allow file-read* file-write*
-    (literal "/dev/null")
-    (literal "/dev/zero")
-    (literal "/dev/random")
-    (literal "/dev/urandom")
-    (literal "/dev/tty")
-    (literal "/dev/ptmx")
-    (literal "/dev/dtracehelper")
-    (subpath "/dev/fd")
-    (subpath "/dev/ttys"))
-
-;; ------------------------------------------------------------------------------
-;; 4. Katalogi projektu — PEŁNY ODCZYT I ZAPIS
-;; ------------------------------------------------------------------------------
-(allow file-read* (subpath project-dir))
-(allow file-write* (subpath project-dir))
-
-;; ------------------------------------------------------------------------------
-;; 5. Katalogi tymczasowe (Git, Node, Python, kompilatory)
-;; Zawężone do konkretnych bezpiecznych ścieżek.
-;; ------------------------------------------------------------------------------
-(allow file-read* file-write*
-    (subpath "/tmp")
-    (subpath "/private/tmp")
-    (subpath "/private/var/folders")  ;; katalogi tymczasowe aplikacji (NSTemporaryDirectory)
-    (subpath "/private/var/tmp")
-    (subpath "/private/var/run"))     ;; sockety systemowe (np. launchd)
-
-;; ------------------------------------------------------------------------------
-;; 6. Narzędzia systemowe i środowiska deweloperskie (TYLKO ODCZYT)
-;; ------------------------------------------------------------------------------
-(allow file-read*
-    (subpath "/usr")
-    (subpath "/bin")
-    (subpath "/sbin")
-    (subpath "/System")
-    (subpath "/Library")
-    (subpath "/opt/homebrew")         ;; Homebrew na Apple Silicon (arm64)
-    (subpath "/usr/local"))           ;; Homebrew / narzędzia na Intel (x86_64)
-
-;; Konfiguracja sieci i certyfikaty CA — wymagane przez cURL, Node.js, Python TLS
-(allow file-read*
-    (subpath "/private/etc")
-    (subpath "/etc"))
-
-;; ------------------------------------------------------------------------------
-;; 7. Konfiguracja użytkownika — odczyt i ZAPIS tylko dla narzędzi AI
-;; ------------------------------------------------------------------------------
-
-;; Antigravity CLI musi zapisywać: historię sesji, bazę SQLite, tokeny OAuth, pliki lock
-(allow file-read* file-write*
-    (home-subpath "/.gemini")
-    (home-subpath "/Library/Application Support/Antigravity")
-    (home-subpath "/Library/Caches/Antigravity")
-    (home-subpath "/Library/Caches/gemini")
-    (home-subpath "/Library/Logs/Antigravity"))
-
-;; Konfiguracja narzędzi deweloperskich — tylko ODCZYT
-(allow file-read*
-    (home-literal "/.gitconfig")
-    (home-literal "/.gitignore_global")
-    (home-literal "/.zshrc")
-    (home-literal "/.zshenv")
-    (home-literal "/.zprofile")
-    (home-literal "/.bashrc")
-    (home-literal "/.bash_profile")
-    (home-literal "/.profile")
-    (home-subpath "/.config/antigravity")
-    (home-subpath "/.config/git")
-    (home-subpath "/.nvm")
-    (home-subpath "/.npm")
-    (home-subpath "/.cargo")
-    (home-subpath "/.asdf"))
-
-;; ------------------------------------------------------------------------------
-;; 8. Rygorystyczna blokada wrażliwych katalogów użytkownika
-;; Reguły deny mają wyższy priorytet niż dopuszczające allow powyżej.
-;; ------------------------------------------------------------------------------
+;; --- Klucze i dane uwierzytelniające ---
 (deny file-read* file-write*
-    ;; Klucze i dane uwierzytelniające
-    (home-subpath "/.ssh")
-    (home-subpath "/.aws")
-    (home-subpath "/.gnupg")
-    (home-subpath "/Library/Keychains")
-    ;; Inne wrażliwe konfiguracje CLI (tokeny GitHub, Google Cloud, 1Password)
-    (home-subpath "/.config/gcloud")
-    (home-subpath "/.config/gh")
-    (home-subpath "/.config/op")
-    ;; Dane osobowe użytkownika i środowisko pracy
-    (home-subpath "/Documents")
-    (home-subpath "/Downloads")
-    (home-subpath "/Pictures")
-    (home-subpath "/Music")
-    (home-subpath "/Desktop"))
+    (subpath (string-append user-home "/.ssh"))
+    (subpath (string-append user-home "/.aws"))
+    (subpath (string-append user-home "/.gnupg"))
+    (subpath (string-append user-home "/Library/Keychains")))
 
-;; Ponowne potwierdzenie pełnego dostępu do katalogu projektu
-;; (projekt może być umieszczony wewnątrz zablokowanego ~/ np. ~/Desktop)
-(allow file-read* (subpath project-dir))
-(allow file-write* (subpath project-dir))
+;; --- Tokeny CLI innych usług (GitHub, Google Cloud, 1Password) ---
+(deny file-read* file-write*
+    (subpath (string-append user-home "/.config/gcloud"))
+    (subpath (string-append user-home "/.config/gh"))
+    (subpath (string-append user-home "/.config/op")))
 
-;; ------------------------------------------------------------------------------
-;; 9. Sieć — pełny ruch wychodzący (HTTPS do Gemini API, git, npm, pip)
-;; ------------------------------------------------------------------------------
-(allow network-outbound)
-(allow network-inbound (local ip "localhost:*"))
-(allow network-bind (local ip "localhost:*"))
-(allow system-socket)
+;; --- Dane osobowe użytkownika ---
+(deny file-read* file-write*
+    (subpath (string-append user-home "/Documents"))
+    (subpath (string-append user-home "/Downloads"))
+    (subpath (string-append user-home "/Pictures"))
+    (subpath (string-append user-home "/Music")))
+
+;; --- Inne projekty na Desktopie — zablokuj Desktop jako całość... ---
+(deny file-read* file-write*
+    (subpath (string-append user-home "/Desktop")))
+
+;; --- ...ale przywróć dostęp do TEGO projektu (może leżeć w ~/Desktop) ---
+(allow file-read* file-write*
+    (subpath project-dir))

@@ -41,6 +41,11 @@ if ! command -v sandbox-exec >/dev/null 2>&1; then
 fi
 
 # 5. Tryb inline: --here / -h — uruchomienie w bieżącej sesji terminala
+# Automatyczne wykrycie terminala VSCode (lub Cursor) — uruchom inline bez otwierania Terminal.app
+if [[ "${TERM_PROGRAM:-}" == "vscode" ]]; then
+    set -- "--here" "$@"
+fi
+
 if [[ "${1:-}" == "--here" || "${1:-}" == "-h" ]]; then
     shift
     echo "[+] Uruchamianie Antigravity CLI w sandboxie (bieżący terminal)..."
