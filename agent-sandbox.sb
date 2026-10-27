@@ -1,0 +1,106 @@
+(version 1)
+
+;; ==============================================================================
+;; Profil Sandboxa macOS (Seatbelt) dla Antigravity CLI / Asystenta AI
+;; Ogranicza uprawnienia procesu wyłącznie do katalogu bieżącego projektu.
+;; ==============================================================================
+
+;; Domyślna reguła: blokuj wszystko, co nie zostało explicite dozwolone poniżej
+(deny default)
+
+;; Parametry przekazywane z bashowego skryptu start.sh (np. przez -D PROJECT_DIR=...)
+;; W przypadku braku parametru podana jest ścieżka bieżąca projektu.
+(define project-dir (param "PROJECT_DIR"))
+(define user-home (param "USER_HOME"))
+
+;; ------------------------------------------------------------------------------
+;; 1. Podstawowe uprawnienia procesów i jądra
+;; ------------------------------------------------------------------------------
+(allow process-exec)
+(allow process-fork)
+(allow sysctl-read)
+
+;; Komunikacja międzyprocesowa (Mach ports) niezbędna dla dyld, libSystem, DNS
+(allow mach-lookup
+    (global-name "com.apple.system.logger")
+    (global-name "com.apple.system.notification_center")
+    (global-name "com.apple.system.opendirectoryd.libinfo")
+    (global-name "com.apple.system.opendirectoryd.membership")
+    (global-name "com.apple.bsd.dirhelper")
+    (global-name "com.apple.analyticsd")
+    (global-name "com.apple.dnssd.service")
+    (global-name "com.apple.usbmuxd"))
+
+;; ------------------------------------------------------------------------------
+;; 2. Obsługa terminala i deskryptorów urządzeń wejścia/wyjścia
+;; ------------------------------------------------------------------------------
+(allow file-ioctl
+    (literal "/dev/tty")
+    (literal "/dev/ptmx")
+    (subpath "/dev"))
+
+(allow file-read* file-write*
+    (literal "/dev/null")
+    (literal "/dev/zero")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+    (literal "/dev/tty")
+    (literal "/dev/ptmx")
+    (literal "/dev/dtracehelper")
+    (subpath "/dev/fd"))
+
+;; ------------------------------------------------------------------------------
+;; 3. Dostęp do katalogu projektu (PEŁNY ODCZYT I ZAPIS)
+;; ------------------------------------------------------------------------------
+(allow file-read* (subpath project-dir))
+(allow file-write* (subpath project-dir))
+
+;; ------------------------------------------------------------------------------
+;; 4. Katalogi tymczasowe (wymagane m.in. przez Git, Node, Python, kompilatory)
+;; ------------------------------------------------------------------------------
+(allow file-read* file-write*
+    (subpath "/tmp")
+    (subpath "/private/tmp")
+    (subpath "/var/folders"))
+
+;; ------------------------------------------------------------------------------
+;; 5. Narzędzia systemowe i środowiska deweloperskie (TYLKO ODCZYT)
+;; ------------------------------------------------------------------------------
+(allow file-read*
+    (subpath "/usr")
+    (subpath "/bin")
+    (subpath "/sbin")
+    (subpath "/System")
+    (subpath "/Library")
+    (subpath "/private/var")
+    (subpath "/opt/homebrew")          ;; Homebrew na Apple Silicon (arm64)
+    (subpath "/usr/local"))            ;; Homebrew / narzędzia na Intel (x86_64)
+
+;; Odczyt konfiguracji CLI i narzędzi deweloperskich użytkownika
+(allow file-read*
+    (subpath (string-append user-home "/.gemini"))
+    (subpath (string-append user-home "/.config"))
+    (literal (string-append user-home "/.gitconfig"))
+    (subpath (string-append user-home "/.nvm"))
+    (subpath (string-append user-home "/.npm"))
+    (subpath (string-append user-home "/.cargo"))
+    (subpath (string-append user-home "/.asdf")))
+
+;; ------------------------------------------------------------------------------
+;; 6. Rygorystyczna blokada wrażliwych katalogów i prywatnych danych użytkownika
+;; ------------------------------------------------------------------------------
+(deny file-read* file-write*
+    (subpath (string-append user-home "/.ssh"))
+    (subpath (string-append user-home "/.aws"))
+    (subpath (string-append user-home "/.gnupg"))
+    (subpath (string-append user-home "/Library/Keychains"))
+    (subpath (string-append user-home "/Documents"))
+    (subpath (string-append user-home "/Downloads"))
+    (subpath (string-append user-home "/Pictures")))
+
+;; ------------------------------------------------------------------------------
+;; 7. Sieć (wymagana do komunikacji z modelami LLM / API Gemini oraz git/npm)
+;; ------------------------------------------------------------------------------
+(allow network-outbound)
+(allow network-inbound (local ip "localhost:*"))
+(allow system-socket)
